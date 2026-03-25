@@ -1,0 +1,132 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Routing overview
+#
+#  publisher  ──► notification.general ──► mattermost.notifications ──► subscriber        → Mattermost webhook
+#                                     ──► log.general               ──► logwriter-general → docker logs
+#             ──► notification.alert  ──► mattermost.notifications  ──► subscriber        → Mattermost webhook
+#                                     ──► log.alert                 ──► logwriter-alert   → docker logs
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Networks
+# ─────────────────────────────────────────────────────────────────────────────
+networks:
+  pubsub:
+    driver: bridge
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Volumes
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  rabbitmq_data:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Services
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+
+  # ── RabbitMQ ──────────────────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: rabbitmq
+    hostname: rabbitmq
+    restart: unless-stopped
+    networks:
+      - pubsub
+    ports:
+      - "5672:5672"    # AMQP
+      - "15672:15672"  # Management UI  →  http://localhost:15672
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./scripts/rabbitmq-definitions.json:/etc/rabbitmq/definitions.json:ro
+      - ./scripts/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      # Load the definitions file so the exchange/queue/binding are pre-created.
+      RABBITMQ_LOAD_DEFINITIONS: /etc/rabbitmq/definitions.json
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Publisher ─────────────────────────────────────────────────────────────
+  publisher:
+    build:
+      context: .
+      dockerfile: publisher/Dockerfile
+    container_name: publisher
+    restart: unless-stopped
+    networks:
+      - pubsub
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/
+      APP_ENV: docker
+
+  # ── Subscriber (Mattermost) ────────────────────────────────────────────────────────────
+  subscriber:
+    build:
+      context: .
+      dockerfile: subscriber/Dockerfile
+    container_name: subscriber
+    restart: unless-stopped
+    networks:
+      - pubsub
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/
+      RABBITMQ_QUEUE: mattermost.notifications
+      APP_ENV: docker
+
+  # ── Logwriter — general ───────────────────────────────────────────────────
+  # Bound to the exact key notification.general only.
+  # Observe with: docker logs -f logwriter-general
+  logwriter-general:
+    build:
+      context: .
+      dockerfile: subscriber/Dockerfile
+      target: logwriter
+    container_name: logwriter-general
+    restart: unless-stopped
+    networks:
+      - pubsub
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/
+      RABBITMQ_QUEUE: log.general
+      LOGWRITER_BINDING: notification.general
+      APP_ENV: docker
+ 
+  # ── Logwriter — alert ─────────────────────────────────────────────────────
+  # Bound to the exact key notification.alert only.
+  # Observe with: docker logs -f logwriter-alert
+  logwriter-alert:
+    build:
+      context: .
+      dockerfile: subscriber/Dockerfile
+      target: logwriter
+    container_name: logwriter-alert
+    restart: unless-stopped
+    networks:
+      - pubsub
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_DEFAULT_USER}:${RABBITMQ_DEFAULT_PASS}@rabbitmq:5672/
+      RABBITMQ_QUEUE: log.alert
+      LOGWRITER_BINDING: notification.alert
+      APP_ENV: docker
