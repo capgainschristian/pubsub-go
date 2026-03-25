@@ -64,6 +64,7 @@ func main() {
 				return
 			}
 
+			// need to turn this into an interface in the future; apply the adapter pattern
 			if err := handle(ctx, d.Body, mm, log); err != nil {
 				log.Error("handling delivery error", zap.Error(err))
 				// Nack with requeue=false to avoid infinite redelivery of bad messages

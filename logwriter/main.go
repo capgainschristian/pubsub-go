@@ -62,6 +62,7 @@ func main() {
 				continue
 			}
 
+			// need to use handle() once it turns into an interface and applies the adapter pattern; for now just log the event details
 			log.Info("EVENT RECEIVED",
 				zap.String("id", evt.ID),
 				zap.String("routing_key", d.RoutingKey),
