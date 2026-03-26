@@ -8,6 +8,7 @@ import (
 	"syscall"
 
 	"github.com/capgainschristian/pubsub-go/internal/config"
+	"github.com/capgainschristian/pubsub-go/internal/dispatch"
 	"github.com/capgainschristian/pubsub-go/internal/events"
 	"github.com/capgainschristian/pubsub-go/internal/rabbitmq"
 	"go.uber.org/zap"
@@ -39,6 +40,10 @@ func main() {
 		log.Fatal("starting consumer error", zap.Error(err))
 	}
 
+	dispatchers := []dispatch.EventDispatcher{
+		dispatch.NewLogDispatcher(log),
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -62,18 +67,17 @@ func main() {
 				continue
 			}
 
-			// need to use handle() once it turns into an interface and applies the adapter pattern; for now just log the event details
-			log.Info("EVENT RECEIVED",
-				zap.String("id", evt.ID),
-				zap.String("routing_key", d.RoutingKey),
-				zap.String("type", evt.Type),
-				zap.String("severity", evt.Severity),
-				zap.String("title", evt.Title),
-				zap.String("body", evt.Body),
-				zap.String("source", evt.Source),
-				zap.Time("timestamp", evt.Timestamp),
-				zap.Any("meta", evt.Meta),
-			)
+			// capture the routing key in case debugging is needed
+			log.Debug("processing delivery", zap.String("routing_key", d.RoutingKey))
+
+			if err := dispatch.Dispatch(ctx, evt, dispatchers, log); err != nil {
+				log.Error("dispatch failed, nacking message",
+					zap.String("event_id", evt.ID),
+					zap.Error(err),
+				)
+				_ = d.Nack(false, false)
+				continue
+			}
 
 			if err := d.Ack(false); err != nil {
 				log.Error("failed to acknowledge message", zap.Error(err))
